@@ -1,0 +1,40 @@
+.{
+    .name = .zilla,
+    .version = "0.0.0",
+    .fingerprint = 0x815ef0dbfab5d92e,
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .glfw = .{
+            .path = "../wgpu-wasm-experiment/modules/glfw",
+        },
+        .wgpu_headers = .{
+            .url = "git+https://github.com/webgpu-native/webgpu-headers.git#bac520839ff5ed2e2b648ed540bd9ec45edbccbc",
+            .hash = "N-V-__8AAIEJBgDDDaQxHnH7W6qR_NeONW1g8R_Tt0Xe9n_u",
+        },
+        .wgpu_windows_x86_64_msvc_debug = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-x86_64-msvc-debug.zip",
+            .hash = "N-V-__8AAN-Buh2sRrOL75j3G_R9CQTNWe5BvH96DTYNGVgo",
+            .lazy = true,
+        },
+        .wgpu_windows_x86_64_msvc_release = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-x86_64-msvc-release.zip",
+            .hash = "N-V-__8AAO0eBwSB7GxV-NB9TuztsaPlUh8rDiZ4-Kr-K_s8",
+            .lazy = true,
+        },
+        .wgpu_macos_aarch64_debug = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v27.0.2.0/wgpu-macos-aarch64-debug.zip",
+            .hash = "N-V-__8AAHzWvglQrDTmtCGkDVbIRUNtQTPwxN8nepnnhtIo",
+            .lazy = true,
+        },
+        .wgpu_macos_aarch64_release = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v27.0.2.0/wgpu-macos-aarch64-release.zip",
+            .hash = "N-V-__8AAIQTZwLF8sTW3ltMeV4me_1Z8jWCpiGA80c4gyYq",
+            .lazy = true,
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
