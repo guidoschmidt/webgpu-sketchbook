@@ -1,7 +1,7 @@
 .{
-    .name = .zilla,
+    .name = .webgpusketchbook,
     .version = "0.0.0",
-    .fingerprint = 0x815ef0dbfab5d92e,
+    .fingerprint = 0x847655c698e6b1be,
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .glfw = .{

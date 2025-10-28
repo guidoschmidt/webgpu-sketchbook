@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         });
         const exe = b.addExecutable(.{
-            .name = "zilla",
+            .name = "exe",
             .root_module = module,
         });
         compile = exe;
@@ -104,7 +104,7 @@ pub fn build(b: *std.Build) !void {
     if (target.result.os.tag == .emscripten) {
         const emscripten_lib = b.addLibrary(.{
             .linkage = .static,
-            .name = "zilla",
+            .name = "lib",
             .root_module = b.createModule(.{
                 .root_source_file = b.path(src_path),
                 .target = target,
