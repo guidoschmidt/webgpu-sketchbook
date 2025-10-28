@@ -433,6 +433,21 @@ fn setup() !void {
             log("Surface: {any}\n", .{surface});
             std.debug.assert(surface != null);
         }
+        if (builtin.os.tag == .windows) {
+            var wgpu_surface_source_windows_hwnd = wgpu.WGPUSurfaceSourceWindowsHWND{
+                .chain = wgpu.WGPUChainedStruct{
+                    .sType = wgpu.WGPUSType_SurfaceSourceWindowsHWND,
+                },
+                .hinstance = std.os.windows.kernel32.GetModuleHandleW(null).?,
+                .hwnd = glfw.getWin32Window(window),
+            };
+            surface = wgpu.wgpuInstanceCreateSurface(instance, &wgpu.WGPUSurfaceDescriptor{
+                .label = wgpu.WGPUStringView{.data= "Surface/Windows", .length = wgpu.WGPU_STRLEN, },
+                .nextInChain = @ptrCast(&wgpu_surface_source_windows_hwnd),
+            });
+            log("\nSurface: {any}", .{surface});
+            std.debug.assert(surface != null);
+        }
 
         var request_adatper_userdata = RequestAdapterUserData{};
         _ = wgpu.wgpuInstanceRequestAdapter(
