@@ -2,10 +2,11 @@
     .name = .webgpusketchbook,
     .version = "0.0.0",
     .fingerprint = 0x847655c698e6b1be,
+
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .glfw = .{
-            .path = "../wgpu-wasm-experiment/modules/glfw",
+            .path = "./modules/glfw",
         },
         .wgpu_headers = .{
             .url = "git+https://github.com/webgpu-native/webgpu-headers.git#bac520839ff5ed2e2b648ed540bd9ec45edbccbc",
