@@ -2,9 +2,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 const glfw = @import("glfw");
 const objc = @import("objc.zig");
+const log = @import("utils.zig").log;
 const wgpu = @import("c.zig").wgpu;
 const emsc = @import("c.zig").emsc;
 const Buffer = @import("Buffer.zig").Buffer;
+const c = @cImport({
+    @cInclude("save_image.h");
+    @cInclude("stb_image_write.h");
+});
 
 const Uniforms = packed struct {
     time: f32,
@@ -25,6 +30,10 @@ const RequestAdapterUserData = struct {
 const RequestDeviceUserData = struct {
     done: bool = false,
     device: wgpu.WGPUDevice = undefined,
+};
+
+const MappedBufferUserData = struct {
+    done: bool = false,
 };
 
 const Vertex = struct {
@@ -65,10 +74,16 @@ var indices = [_]u16{
 var index_data: []u16 = &indices;
 
 // Global CTX state
+const width = 100;
+const height = 100;
+
+var window: *glfw.Window = undefined;
+var instance: wgpu.WGPUInstance = undefined;
 var adapter: wgpu.WGPUAdapter = undefined;
 var device: wgpu.WGPUDevice = undefined;
 var surface: wgpu.WGPUSurface = undefined;
 var capabilities: wgpu.WGPUSurfaceCapabilities = undefined;
+var texture_format: wgpu.WGPUTextureFormat = wgpu.WGPUTextureFormat_BGRA8Unorm;
 var config: wgpu.WGPUSurfaceConfiguration = undefined;
 var render_pipeline: wgpu.WGPURenderPipeline = undefined;
 var bind_group: wgpu.WGPUBindGroup = undefined;
@@ -76,6 +91,9 @@ var vertex_buffer: wgpu.WGPUBuffer = undefined;
 var index_buffer: wgpu.WGPUBuffer = undefined;
 var uniform_buffer: wgpu.WGPUBuffer = undefined;
 var queue: wgpu.WGPUQueue = undefined;
+
+var target_texture: wgpu.WGPUTexture = undefined;
+var target_texture_view: wgpu.WGPUTextureView = undefined;
 
 fn WGPUBufferUsage(comptime usage: u64) type {
     if (builtin.os.tag == .emscripten) {
@@ -113,6 +131,45 @@ pub fn createBuffer(
     return buffer;
 }
 
+pub fn createTexture() wgpu.WGPUTexture {
+    const texture_descriptor = wgpu.WGPUTextureDescriptor{
+        .nextInChain = null,
+        .label = wgpu.WGPUStringView{
+            .data = "RenderTarget",
+            .length = wgpu.WGPU_STRLEN,
+        },
+        .dimension = wgpu.WGPUTextureDimension_2D,
+        .size = .{
+            .width = width,
+            .height = height,
+            .depthOrArrayLayers = 1,
+        },
+        .format = texture_format,
+        .mipLevelCount = 1,
+        .sampleCount = 1,
+        .usage = wgpu.WGPUTextureUsage_RenderAttachment | wgpu.WGPUTextureUsage_CopySrc,
+        .viewFormatCount = 0,
+        .viewFormats = null,
+    };
+    return wgpu.wgpuDeviceCreateTexture(device, &texture_descriptor);
+}
+
+pub fn createTextureView(texture: wgpu.WGPUTexture) wgpu.WGPUTextureView {
+    const texture_view_descriptor = wgpu.WGPUTextureViewDescriptor{
+        .nextInChain = null,
+        .label = wgpu.WGPUStringView{
+            .data = "RenderTexutreView",
+            .length = wgpu.WGPU_STRLEN,
+        },
+        .baseArrayLayer = 0,
+        .arrayLayerCount = 1,
+        .baseMipLevel = 0,
+        .mipLevelCount = 1,
+        .aspect = wgpu.WGPUTextureAspect_All,
+    };
+    return wgpu.wgpuTextureCreateView(texture, &texture_view_descriptor);
+}
+
 pub fn printAdapterInfo() void {
     var info = wgpu.WGPUAdapterInfo{};
     const status = wgpu.wgpuAdapterGetInfo(adapter, &info);
@@ -120,19 +177,19 @@ pub fn printAdapterInfo() void {
         var description: []const u8 = undefined;
         description.ptr = info.description.data;
         description.len = info.description.length;
-        std.debug.print("Description: {s}\n", .{description});
+        log("Description: {s}\n", .{description});
         var vendor: []const u8 = undefined;
         vendor.ptr = info.vendor.data;
         vendor.len = info.vendor.length;
-        std.debug.print("Vendor: {s}\n", .{vendor});
+        log("Vendor: {s}\n", .{vendor});
         var device_info: []const u8 = undefined;
         device_info.ptr = info.device.data;
         device_info.len = info.device.length;
-        std.debug.print("Device: {s}\n", .{device_info});
-        std.debug.print("Backend: {d}\n", .{info.backendType});
-        std.debug.print("Adapter: {d}\n", .{info.adapterType});
-        std.debug.print("Vendor ID: {d}\n", .{info.vendorID});
-        std.debug.print("Device ID: {d}\n", .{info.deviceID});
+        log("Device: {s}\n", .{device_info});
+        log("Backend: {d}\n", .{info.backendType});
+        log("Adapter: {d}\n", .{info.adapterType});
+        log("Vendor ID: {d}\n", .{info.vendorID});
+        log("Device ID: {d}\n", .{info.deviceID});
     }
 }
 
@@ -162,6 +219,7 @@ pub fn createVertexAttributes(
 }
 
 fn draw() callconv(.c) void {
+    // Update Uniforms
     uniforms.time += 0.01;
     uniforms.colorshift += 0.01;
 
@@ -174,11 +232,19 @@ fn draw() callconv(.c) void {
         @sizeOf(Uniforms),
     );
 
+    // Get Texture from sufrace (disable for headless rendering)
     var surface_texture: wgpu.WGPUSurfaceTexture = undefined;
     wgpu.wgpuSurfaceGetCurrentTexture(surface, &surface_texture);
     const frame = wgpu.wgpuTextureCreateView(surface_texture.texture, null);
     std.debug.assert(frame != null);
 
+    // Headless rendering
+    // headless: {
+    //     const frame = target_texture_view;
+    //     break :headless;
+    // }
+
+    // Command Encoder
     const command_encoder = wgpu.wgpuDeviceCreateCommandEncoder(
         device,
         &wgpu.WGPUCommandEncoderDescriptor{
@@ -249,16 +315,28 @@ fn draw() callconv(.c) void {
     );
     std.debug.assert(command_buffer != null);
 
+    // save_texture_to_file: {
+    //     _ = wgpu.wgpuBufferMapAsync(
+    //         wgpu.WGPUMapMode_Read,
+    //         0,
+    //         @sizeOf(),
+    //     );
+    //     break :save_texture_to_file;
+    // }
+
     wgpu.wgpuQueueSubmit(queue, 1, &[_]wgpu.WGPUCommandBuffer{
         command_buffer,
     });
 
+    // Only use for non-headless rendering
     if (builtin.os.tag != .emscripten) {
         _ = wgpu.wgpuSurfacePresent(surface);
     }
 
     wgpu.wgpuCommandBufferRelease(command_buffer);
     wgpu.wgpuCommandEncoderRelease(command_encoder);
+
+    // Only enable for non-headless rendering
     wgpu.wgpuTextureViewRelease(frame);
 }
 
@@ -272,12 +350,12 @@ fn handleRequestAdapter(
     _ = user_data2;
     _ = message;
     if (status == wgpu.WGPURequestAdapterStatus_Success) {
-        std.debug.print("[Request Adapter] Status: {d}\n", .{status});
+        log("[Request Adapter] Status: {d}\n", .{status});
         const user_data: ?*RequestAdapterUserData = @ptrCast(@alignCast(user_data1));
         user_data.?.done = true;
         user_data.?.adapter = resolved_adapter;
     } else {
-        std.debug.print("[ERROR/Request Adapter] Status: {d}\n", .{status});
+        log("[ERROR/Request Adapter] Status: {d}\n", .{status});
     }
 }
 
@@ -291,37 +369,49 @@ fn handleRequestDevice(
     _ = user_data2;
     _ = message;
     if (status == wgpu.WGPURequestDeviceStatus_Success) {
-        std.debug.print("[Request Device] Status: {d}\n", .{status});
+        log("[Request Device] Status: {d}\n", .{status});
         const user_data: ?*RequestDeviceUserData = @ptrCast(@alignCast(user_data1));
         user_data.?.done = true;
         user_data.?.device = resolved_device;
         return;
     } else {
-        std.debug.print("[ERROR/Request Device] Status: {d}\n", .{status});
+        log("[ERROR/Request Device] Status: {d}\n", .{status});
     }
 }
 
+fn handleMappedBuffer(
+    status: wgpu.WGPUMapAsyncStatus,
+    message: wgpu.WGPUStringView,
+    user_data1: ?*anyopaque,
+    user_data2: ?*anyopaque,
+) callconv(.c) void {
+    _ = message;
+    _ = user_data2;
+    log("[Map Buffer Async] Status: {any}\n", .{status});
+    if (status > 0) {
+        const user_data: ?*MappedBufferUserData = @ptrCast(@alignCast(user_data1));
+        user_data.?.done = true;
+        return;
+    }
+    log("[ERROR/Map Buffer Async] Status: {any}\n", .{status});
+}
+
 fn setup() !void {
-    try glfw.init();
-    defer glfw.terminate();
-
-    const width = 720;
-    const height = 720;
-    glfw.windowHint(.CLIENT_API, .NO_API);
-    const window = glfw.createWindow(width, height, "[wgpu-native + glfw]", null);
-    // _ = window;
-
-    const instance = wgpu.wgpuCreateInstance(null);
+    // const instance_descriptor = wgpu.WGPUInstanceDescriptor{
+    //     .requiredFeatureCount = 1,
+    //     .requiredFeatures = wgpu.WGPUInstanceFeatureName_TimedWaitAny,
+    // };
+    instance = wgpu.wgpuCreateInstance(null);
     std.debug.assert(instance != null);
-    std.debug.print("Instance: {*}\n", .{instance});
+    log("Instance: {*}\n", .{instance});
 
     if (builtin.os.tag == .emscripten) {
         device = wgpu.emscripten_webgpu_get_device();
-        std.debug.print("Device: {*}\n", .{device});
+        log("Device: {*}\n", .{device});
     } else {
         if (builtin.os.tag == .macos) {
             const metal_layer = objc.getMetalLayer(glfw.getCocoaWindow(window).?);
-            std.debug.print("\nMetal Layer: {any}", .{metal_layer});
+            log("\nMetal Layer: {any}", .{metal_layer});
 
             var wgpu_surface_source_metal_layer = wgpu.WGPUSurfaceSourceMetalLayer{
                 .chain = wgpu.WGPUChainedStruct{
@@ -340,7 +430,7 @@ fn setup() !void {
                     .nextInChain = @ptrCast(&wgpu_surface_source_metal_layer),
                 },
             );
-            std.debug.print("Surface: {any}\n", .{surface});
+            log("Surface: {any}\n", .{surface});
             std.debug.assert(surface != null);
         }
 
@@ -348,15 +438,16 @@ fn setup() !void {
         _ = wgpu.wgpuInstanceRequestAdapter(
             instance,
             &wgpu.WGPURequestAdapterOptions{
-                .compatibleSurface = surface,
+                .compatibleSurface = surface, // null for headless
             },
             wgpu.WGPURequestAdapterCallbackInfo{
+                .mode = wgpu.WGPUCallbackMode_AllowSpontaneous,
                 .callback = handleRequestAdapter,
                 .userdata1 = &request_adatper_userdata,
             },
         );
         adapter = request_adatper_userdata.adapter;
-        std.debug.print("Adapter: {*}\n", .{adapter});
+        log("Adapter: {*}\n", .{adapter});
         std.debug.assert(adapter != null);
         printAdapterInfo();
 
@@ -364,28 +455,19 @@ fn setup() !void {
         _ = wgpu.wgpuAdapterRequestDevice(
             adapter,
             null,
-            // &wgpu.WGPUDeviceDescriptor{
-            //     .label = wgpu.WGPUStringView{
-            //         .data = "Device",
-            //         .length = wgpu.WGPU_STRLEN,
-            //     },
-            //     .nextInChain = null,
-            //     .deviceLostCallbackInfo = .{},
-            //     .requiredFeatureCount = 0,
-            //     .requiredLimits = null,
-            // },
             wgpu.WGPURequestDeviceCallbackInfo{
+                .mode = wgpu.WGPUCallbackMode_AllowSpontaneous,
                 .callback = handleRequestDevice,
                 .userdata1 = &request_device_userdata,
             },
         );
         device = request_device_userdata.device;
-        std.debug.print("Device: {*}\n", .{device});
+        log("Device: {*}\n", .{device});
         std.debug.assert(device != null);
     }
 
     queue = wgpu.wgpuDeviceGetQueue(device);
-    std.debug.print("Queue: {*}\n", .{queue});
+    log("Queue: {*}\n", .{queue});
     std.debug.assert(queue != null);
 
     if (builtin.os.tag == .emscripten) {
@@ -408,7 +490,7 @@ fn setup() !void {
             .nextInChain = @ptrCast(@constCast(&canvas_selector)),
         };
         surface = wgpu.wgpuInstanceCreateSurface(instance, &surface_descriptor);
-        std.debug.print("Surface: {*}\n", .{surface});
+        log("Surface: {*}\n", .{surface});
 
         const surface_config = wgpu.WGPUSurfaceConfiguration{
             .device = device,
@@ -423,6 +505,8 @@ fn setup() !void {
     } else {
         _ = wgpu.wgpuSurfaceGetCapabilities(surface, adapter, &capabilities);
 
+        texture_format = if (builtin.os.tag == .emscripten) wgpu.WGPUTextureFormat_BGRA8Unorm else capabilities.formats[0];
+
         const surface_config = wgpu.WGPUSurfaceConfiguration{
             .device = device,
             .usage = wgpu.WGPUTextureUsage_RenderAttachment,
@@ -434,9 +518,9 @@ fn setup() !void {
         };
         wgpu.wgpuSurfaceConfigure(surface, &surface_config);
     }
+}
 
-    // SHADER
-    const shader_code = @embedFile("shader.basic");
+fn createShaderModule(shader_code: []const u8) wgpu.WGPUShaderModule {
     const shader_module = wgpu.wgpuDeviceCreateShaderModule(
         device,
         &wgpu.WGPUShaderModuleDescriptor{
@@ -457,9 +541,16 @@ fn setup() !void {
             )),
         },
     );
-    std.debug.print("Shader: {*}\n", .{shader_module});
+    log("Shader: {*}\n", .{shader_module});
     std.debug.assert(shader_module != null);
+    return shader_module;
+}
 
+fn renderPipeline() void {
+    // SHADER
+    const shader_module = createShaderModule(@embedFile("@render.basic"));
+
+    // Uniform buffer
     uniform_buffer = createBuffer(
         Uniforms,
         "Uniform Buffer",
@@ -467,10 +558,10 @@ fn setup() !void {
         wgpu.WGPUBufferUsage_Uniform,
     );
     std.debug.assert(uniform_buffer != null);
-    std.debug.print("Uniform Buffer: {any}\n", .{uniform_buffer});
+    log("Uniform Buffer: {any}\n", .{uniform_buffer});
 
     const vertex_attributes_auto = createVertexAttributes(Vertex);
-    std.debug.print("\n\nVertex Attributes: {any}\n", .{vertex_attributes_auto});
+    log("\n\nVertex Attributes: {any}\n", .{vertex_attributes_auto});
 
     const vertex_buffer_layout = wgpu.WGPUVertexBufferLayout{
         .arrayStride = @sizeOf(Vertex),
@@ -478,7 +569,7 @@ fn setup() !void {
         .attributeCount = vertex_attributes_auto.len,
         .attributes = &vertex_attributes_auto,
     };
-    std.debug.print("\n\nVertex Buffer Layout: {any}\n", .{vertex_buffer_layout});
+    log("\n\nVertex Buffer Layout: {any}\n", .{vertex_buffer_layout});
 
     const bind_group_layout_entries = &[_]wgpu.WGPUBindGroupLayoutEntry{
         wgpu.WGPUBindGroupLayoutEntry{
@@ -516,7 +607,7 @@ fn setup() !void {
         },
     );
     std.debug.assert(bind_group != null);
-    std.debug.print("Bind Group: {any}\n", .{bind_group});
+    log("Bind Group: {any}\n", .{bind_group});
 
     // PIPELINE
     const pipeline_layout = wgpu.wgpuDeviceCreatePipelineLayout(
@@ -560,7 +651,7 @@ fn setup() !void {
                 .targetCount = 1,
                 .targets = &[_]wgpu.WGPUColorTargetState{
                     wgpu.WGPUColorTargetState{
-                        .format = if (builtin.os.tag == .emscripten) wgpu.WGPUTextureFormat_BGRA8Unorm else capabilities.formats[0],
+                        .format = texture_format,
                         .writeMask = wgpu.WGPUColorWriteMask_All,
                     },
                 },
@@ -578,7 +669,7 @@ fn setup() !void {
         },
     );
     std.debug.assert(render_pipeline != null);
-    std.debug.print("Render Pipeline: {*}\n", .{render_pipeline});
+    log("Render Pipeline: {*}\n", .{render_pipeline});
 
     // UPLOAD GEOMETRY
     vertex_buffer = createBuffer(
@@ -607,9 +698,254 @@ fn setup() !void {
         index_data.ptr,
         @sizeOf(u16) * index_data.len,
     );
-    std.debug.print("Vertex + Index Buffer:\n{any}\n{any}\n", .{ vertex_buffer, index_buffer });
+    log("Vertex + Index Buffer:\n{any}\n{any}\n", .{ vertex_buffer, index_buffer });
+}
 
-    // DRAW
+fn computePipeline() void {
+    // Data
+    const amount = 24;
+    var numbers = [_]u32{1} ** amount;
+    for (0..amount) |i| {
+        numbers[i] = @intCast(i);
+    }
+    const numbers_size = @sizeOf(@TypeOf(numbers));
+
+    // Buffers
+    const input_buffer = createBuffer(
+        u32,
+        "Input Buffer",
+        numbers.len,
+        wgpu.WGPUBufferUsage_Storage,
+    );
+
+    const output_buffer = createBuffer(
+        u32,
+        "Output Buffer",
+        numbers.len,
+        wgpu.WGPUBufferUsage_Storage | wgpu.WGPUBufferUsage_CopySrc,
+    );
+
+    const map_buffer = createBuffer(
+        u32,
+        "Mapping Buffer",
+        numbers.len,
+        wgpu.WGPUBufferUsage_MapRead,
+    );
+
+    // Bind group
+    const bind_group_layout_entries = &[_]wgpu.WGPUBindGroupLayoutEntry{
+        wgpu.WGPUBindGroupLayoutEntry{
+            .binding = 0,
+            .visibility = wgpu.WGPUShaderStage_Compute,
+            .buffer = wgpu.WGPUBufferBindingLayout{
+                .type = wgpu.WGPUBufferBindingType_ReadOnlyStorage,
+                .hasDynamicOffset = @intFromBool(false),
+            },
+        },
+        wgpu.WGPUBindGroupLayoutEntry{
+            .binding = 1,
+            .visibility = wgpu.WGPUShaderStage_Compute,
+            .buffer = wgpu.WGPUBufferBindingLayout{
+                .type = wgpu.WGPUBufferBindingType_Storage,
+                .hasDynamicOffset = @intFromBool(false),
+            },
+        },
+    };
+    const bind_group_layout = wgpu.wgpuDeviceCreateBindGroupLayout(
+        device,
+        &wgpu.WGPUBindGroupLayoutDescriptor{
+            .entryCount = bind_group_layout_entries.len,
+            .entries = bind_group_layout_entries,
+        },
+    );
+
+    const bind_group_entries = [_]wgpu.WGPUBindGroupEntry{
+        wgpu.WGPUBindGroupEntry{
+            .binding = 0,
+            .buffer = input_buffer,
+            .offset = 0,
+            .size = numbers_size,
+        },
+        wgpu.WGPUBindGroupEntry{
+            .binding = 1,
+            .buffer = output_buffer,
+            .offset = 0,
+            .size = numbers_size,
+        },
+    };
+
+    bind_group = wgpu.wgpuDeviceCreateBindGroup(
+        device,
+        &wgpu.WGPUBindGroupDescriptor{
+            .layout = bind_group_layout,
+            .entryCount = bind_group_entries.len,
+            .entries = &bind_group_entries,
+        },
+    );
+    std.debug.assert(bind_group != null);
+
+    // Shader
+    const compute_shader = createShaderModule(@embedFile("@compute.basic"));
+
+    const pipeline_layout = wgpu.wgpuDeviceCreatePipelineLayout(
+        device,
+        &wgpu.WGPUPipelineLayoutDescriptor{
+            .label = wgpu.WGPUStringView{
+                .data = "Compute Pipeline Layout",
+                .length = wgpu.WGPU_STRLEN,
+            },
+            .bindGroupLayoutCount = 1,
+            .bindGroupLayouts = &bind_group_layout,
+        },
+    );
+    const compute_pipeline = wgpu.wgpuDeviceCreateComputePipeline(
+        device,
+        &wgpu.WGPUComputePipelineDescriptor{
+            .label = wgpu.WGPUStringView{
+                .data = "Compute Pipeline",
+                .length = wgpu.WGPU_STRLEN,
+            },
+            .layout = pipeline_layout,
+            .compute = (if (builtin.os.tag == .emscripten) wgpu.WGPUComputeState else wgpu.WGPUProgrammableStageDescriptor){
+                .module = compute_shader,
+                .entryPoint = wgpu.WGPUStringView{
+                    .data = "main",
+                    .length = wgpu.WGPU_STRLEN,
+                },
+            },
+        },
+    );
+    std.debug.assert(compute_pipeline != null);
+
+    // Dispatch
+    const buffer_size = @sizeOf(@TypeOf(numbers));
+    const command_encoder = wgpu.wgpuDeviceCreateCommandEncoder(
+        device,
+        &wgpu.WGPUCommandEncoderDescriptor{
+            .label = wgpu.WGPUStringView{
+                .data = "Compute Command Encoder",
+                .length = wgpu.WGPU_STRLEN,
+            },
+        },
+    );
+
+    const compute_pass_encoder = wgpu.wgpuCommandEncoderBeginComputePass(
+        command_encoder,
+        &wgpu.WGPUComputePassDescriptor{
+            .label = wgpu.WGPUStringView{
+                .data = "Compute Pass",
+                .length = wgpu.WGPU_STRLEN,
+            },
+        },
+    );
+
+    wgpu.wgpuComputePassEncoderSetPipeline(compute_pass_encoder, compute_pipeline);
+    wgpu.wgpuComputePassEncoderSetBindGroup(compute_pass_encoder, 0, bind_group, 0, 0);
+
+    const dispatch_count = (numbers.len / 16) + 1;
+    wgpu.wgpuComputePassEncoderDispatchWorkgroups(compute_pass_encoder, dispatch_count, 1, 1);
+
+    wgpu.wgpuComputePassEncoderEnd(compute_pass_encoder);
+
+    // oputput buffer → mapping buffer
+    wgpu.wgpuCommandEncoderCopyBufferToBuffer(
+        command_encoder,
+        output_buffer,
+        0,
+        map_buffer,
+        0,
+        buffer_size,
+    );
+
+    const command_buffer = wgpu.wgpuCommandEncoderFinish(
+        command_encoder,
+        &wgpu.WGPUCommandBufferDescriptor{
+            .label = wgpu.WGPUStringView{
+                .data = "Compute Command Buffer",
+                .length = wgpu.WGPU_STRLEN,
+            },
+        },
+    );
+    std.debug.assert(command_buffer != null);
+
+    // Upload data
+    wgpu.wgpuQueueWriteBuffer(
+        queue,
+        input_buffer,
+        0,
+        &numbers,
+        buffer_size,
+    );
+    wgpu.wgpuQueueSubmit(queue, 1, &command_buffer);
+
+    // Retrieve results
+    var user_data = MappedBufferUserData{};
+    _ = wgpu.wgpuBufferMapAsync(
+        map_buffer,
+        wgpu.WGPUMapMode_Read,
+        0,
+        buffer_size,
+        wgpu.WGPUBufferMapCallbackInfo{
+            .mode = wgpu.WGPUCallbackMode_AllowSpontaneous,
+            .callback = handleMappedBuffer,
+            .userdata1 = &user_data,
+        },
+    );
+
+    while (!user_data.done) {
+        if (builtin.os.tag == .emscripten) {
+            log("Sleeping... \n", .{});
+            emsc.emscripten_sleep(100);
+        }
+        wgpu.wgpuInstanceProcessEvents(instance);
+    }
+
+    const result = @as([*]const u32, @ptrCast(@alignCast(wgpu.wgpuBufferGetConstMappedRange(
+        map_buffer,
+        0,
+        buffer_size,
+    ))));
+
+    wgpu.wgpuBufferUnmap(map_buffer);
+
+    log("Compute Results:", .{});
+    for (0..amount) |i| {
+        log("\n{d: >4}: {d: >4}", .{ numbers[i], result[i] });
+    }
+
+    // Cleanup
+    wgpu.wgpuComputePassEncoderRelease(compute_pass_encoder);
+    wgpu.wgpuCommandBufferRelease(command_buffer);
+    wgpu.wgpuCommandEncoderRelease(command_encoder);
+}
+
+fn compute() void {}
+
+fn deinit() void {
+    wgpu.wgpuQueueRelease(queue);
+    wgpu.wgpuInstanceRelease(instance);
+}
+
+pub fn main() !void {
+    try glfw.init();
+    defer glfw.terminate();
+
+    glfw.windowHint(.CLIENT_API, .NO_API);
+    window = glfw.createWindow(width, height, "[wgpu-native + glfw]", null);
+
+    try setup();
+
+    target_texture = createTexture();
+    std.debug.print("Texture: {any}\n", .{target_texture});
+    std.debug.assert(target_texture != null);
+    target_texture_view = createTextureView(target_texture);
+    std.debug.print("Texture View: {any}\n", .{target_texture_view});
+    std.debug.assert(target_texture_view != null);
+
+    computePipeline();
+
+    renderPipeline();
+
     if (builtin.os.tag == .emscripten) {
         emsc.emscripten_set_main_loop(draw, 0, true);
     } else {
@@ -619,12 +955,17 @@ fn setup() !void {
 
             draw();
         }
+
+        // headless: {
+        //     var frame: usize = 0;
+        //     while (true) : (frame += 1) {
+        //         if (frame > 100) break;
+        //         std.debug.print("Writing frame {d:0>4}\n", .{frame});
+        //         draw();
+        //     }
+        //     break :headless;
+        // }
     }
 
-    // DEINIT
-    wgpu.wgpuInstanceRelease(instance);
-}
-
-pub fn main() !void {
-    try setup();
+    deinit();
 }

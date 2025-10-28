@@ -169,6 +169,7 @@ pub fn build(b: *std.Build) !void {
             // "-sALLOW_MEMORY_GROWTH=1",
             // "-sMALLOC=emmalloc",
             "--use-port=emdawnwebgpu:cpp_bindings=false",
+            // "--use-port=./emdawnwebgpu-v20250820.224631.remoteport.py:cpp_bindings=false",
         });
         emcc_cmd.step.dependOn(&emscripten_lib.step);
 
@@ -195,7 +196,15 @@ pub fn build(b: *std.Build) !void {
     try compileShader(
         b,
         &.{compile},
-        "shader.basic",
+        "@compute.basic",
+        null,
+        "src/slang/compute.slang",
+        "src/shader/wgsl/compute.wgsl",
+    );
+    try compileShader(
+        b,
+        &.{compile},
+        "@render.basic",
         null,
         "src/slang/basic.slang",
         "src/shader/wgsl/basic.wgsl",

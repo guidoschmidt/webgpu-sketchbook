@@ -3,38 +3,7 @@ const builtin = @import("builtin");
 const emsc = @import("c.zig").wgpu;
 
 pub fn WGPUBufferUsage(comptime usage: u64) type {
-    if (builtin.os.tag == .emscripten) {
-        return struct {
-            pub fn get() u32 {
-                return wgpu.WGPUBufferUsage_CopyDst | usage;
-            }
-        };
-    } else {
-        return struct {
-            pub fn get() u64 {
-                return wgpu.WGPUBufferUsage_CopyDst | usage;
-            }
-        };
-    }
-}
-
-pub fn WGPUStringView(str: []const u8) type {
-    // if (builtin.os.tag == .emscripten) {
-    //     return struct {
-    //         pub fn get() [*c]const u8 {
-    //             return @ptrCast(str);
-    //         }
-    //     };
-    // } else {
-    return struct {
-        pub fn get() wgpu.WGPUStringView {
-            return .{
-                .data = @ptrCast(str),
-                .length = wgpu.WGPU_STRLEN,
-            };
-        }
-    };
-    // }
+    return wgpu.WGPUBufferUsage_CopyDst | usage;
 }
 
 pub const BufferUsage = enum(u64) {
@@ -54,14 +23,17 @@ fn createBuffer(
     device: wgpu.WGPUDevice,
     comptime usage: wgpu.WGPUBufferUsage,
 ) wgpu.WGPUBuffer {
-    return wgpu.wgpuDeviceCreateBuffer(
+    return wgpu.wgpuDeviceCreateBuffer{
         device,
         &wgpu.WGPUBufferDescriptor{
-            .label = WGPUStringView(label).get(),
+            .label = wgpu.WGPUStringView{
+                .data = label,
+                .length = wgpu.WGPU_STRLEN,
+            },
             .usage = WGPUBufferUsage(usage).get(),
             .size = @sizeOf(U) * count,
         },
-    );
+    };
 }
 
 pub fn Buffer(

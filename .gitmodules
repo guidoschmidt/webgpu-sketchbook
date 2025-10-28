@@ -1,0 +1,3 @@
+[submodule "src/slang/slanglib"]
+	path = src/slang/slanglib
+	url = git@github.com:guidoschmidt/slang-shader-library.git
