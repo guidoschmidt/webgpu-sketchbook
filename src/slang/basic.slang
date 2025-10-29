@@ -28,5 +28,6 @@ Fragment fs_main(VertexStageOutput input) : SV_Target {
     // output.color = pillow(float4(color_a, 1), float4(color_b, 1), 5 + gamma * 10, input.uv);
     // output.color = float4(sin(uniforms.time), cos(uniforms.time), tan(uniforms.time), 1);
     output.color.rgb = input.color;
+    output.color.a = 1;
     return output;
 }

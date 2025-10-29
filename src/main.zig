@@ -6,10 +6,7 @@ const log = @import("utils.zig").log;
 const wgpu = @import("c.zig").wgpu;
 const emsc = @import("c.zig").emsc;
 const Buffer = @import("Buffer.zig").Buffer;
-const c = @cImport({
-    @cInclude("save_image.h");
-    @cInclude("stb_image_write.h");
-});
+const zstbi = @import("zstbi");
 
 const Uniforms = packed struct {
     time: f32,
@@ -74,8 +71,8 @@ var indices = [_]u16{
 var index_data: []u16 = &indices;
 
 // Global CTX state
-const width = 100;
-const height = 100;
+const width = 256;
+const height = 256;
 
 var window: *glfw.Window = undefined;
 var instance: wgpu.WGPUInstance = undefined;
@@ -90,7 +87,11 @@ var bind_group: wgpu.WGPUBindGroup = undefined;
 var vertex_buffer: wgpu.WGPUBuffer = undefined;
 var index_buffer: wgpu.WGPUBuffer = undefined;
 var uniform_buffer: wgpu.WGPUBuffer = undefined;
+var pixel_buffer: wgpu.WGPUBuffer = undefined;
 var queue: wgpu.WGPUQueue = undefined;
+
+var frame_number: usize = 0;
+var record_frame_count: usize = 60;
 
 var target_texture: wgpu.WGPUTexture = undefined;
 var target_texture_view: wgpu.WGPUTextureView = undefined;
@@ -144,10 +145,10 @@ pub fn createTexture() wgpu.WGPUTexture {
             .height = height,
             .depthOrArrayLayers = 1,
         },
-        .format = texture_format,
+        .format = wgpu.WGPUTextureFormat_RGBA8Unorm,
         .mipLevelCount = 1,
         .sampleCount = 1,
-        .usage = wgpu.WGPUTextureUsage_RenderAttachment | wgpu.WGPUTextureUsage_CopySrc,
+        .usage = wgpu.WGPUTextureUsage_TextureBinding | wgpu.WGPUTextureUsage_RenderAttachment | wgpu.WGPUTextureUsage_CopySrc,
         .viewFormatCount = 0,
         .viewFormats = null,
     };
@@ -263,8 +264,20 @@ fn draw() callconv(.c) void {
                 .data = "Render Pass Encoder",
                 .length = wgpu.WGPU_STRLEN,
             },
-            .colorAttachmentCount = 1,
+            .colorAttachmentCount = 2,
             .colorAttachments = &[_]wgpu.WGPURenderPassColorAttachment{
+                wgpu.WGPURenderPassColorAttachment{
+                    .view = target_texture_view,
+                    .loadOp = wgpu.WGPULoadOp_Clear,
+                    .storeOp = wgpu.WGPUStoreOp_Store,
+                    .depthSlice = wgpu.WGPU_DEPTH_SLICE_UNDEFINED,
+                    .clearValue = wgpu.WGPUColor{
+                        .r = 0,
+                        .g = 0,
+                        .b = 0,
+                        .a = 1,
+                    },
+                },
                 wgpu.WGPURenderPassColorAttachment{
                     .view = frame,
                     .loadOp = wgpu.WGPULoadOp_Clear,
@@ -304,6 +317,29 @@ fn draw() callconv(.c) void {
     wgpu.wgpuRenderPassEncoderEnd(render_pass_encoder);
     wgpu.wgpuRenderPassEncoderRelease(render_pass_encoder);
 
+    wgpu.wgpuCommandEncoderCopyTextureToBuffer(
+        command_encoder,
+        &wgpu.WGPUTexelCopyTextureInfo{
+            .texture = target_texture,
+            .mipLevel = 0,
+            .origin = .{},
+            .aspect = wgpu.WGPUTextureAspect_All,
+        },
+        &wgpu.WGPUTexelCopyBufferInfo{
+            .layout = wgpu.WGPUTexelCopyBufferLayout{
+                .offset = 0,
+                .bytesPerRow = @sizeOf(u32) * width,
+                .rowsPerImage = height,
+            },
+            .buffer = pixel_buffer,
+        },
+        &wgpu.WGPUExtent3D{
+            .width = width,
+            .height = height,
+            .depthOrArrayLayers = 1,
+        },
+    );
+
     const command_buffer = wgpu.wgpuCommandEncoderFinish(
         command_encoder,
         &wgpu.WGPUCommandBufferDescriptor{
@@ -315,18 +351,29 @@ fn draw() callconv(.c) void {
     );
     std.debug.assert(command_buffer != null);
 
-    // save_texture_to_file: {
-    //     _ = wgpu.wgpuBufferMapAsync(
-    //         wgpu.WGPUMapMode_Read,
-    //         0,
-    //         @sizeOf(),
-    //     );
-    //     break :save_texture_to_file;
-    // }
-
     wgpu.wgpuQueueSubmit(queue, 1, &[_]wgpu.WGPUCommandBuffer{
         command_buffer,
     });
+
+    save_texture_to_file: {
+        var user_data = MappedBufferUserData{};
+        _ = wgpu.wgpuBufferMapAsync(
+            pixel_buffer,
+            wgpu.WGPUMapMode_Read,
+            0,
+            width * height * 4,
+            wgpu.WGPUBufferMapCallbackInfo{
+                .mode = wgpu.WGPUCallbackMode_AllowSpontaneous,
+                .callback = handleMappedPixelBuffer,
+                .userdata1 = &user_data,
+            },
+        );
+        while (!user_data.done) {
+            // log("[Pixel Buffer Map Async] Waiting...\n", .{});
+            wgpu.wgpuInstanceProcessEvents(instance);
+        }
+        break :save_texture_to_file;
+    }
 
     // Only use for non-headless rendering
     if (builtin.os.tag != .emscripten) {
@@ -396,6 +443,50 @@ fn handleMappedBuffer(
     log("[ERROR/Map Buffer Async] Status: {any}\n", .{status});
 }
 
+fn handleMappedPixelBuffer(
+    status: wgpu.WGPUMapAsyncStatus,
+    message: wgpu.WGPUStringView,
+    user_data1: ?*anyopaque,
+    user_data2: ?*anyopaque,
+) callconv(.c) void {
+    _ = message;
+    _ = user_data2;
+    // log("[Map Pixel Buffer Async] Status: {any}\n", .{status});
+    if (status == wgpu.WGPUMapAsyncStatus_Success) {
+        const user_data: ?*MappedBufferUserData = @ptrCast(@alignCast(user_data1));
+
+        const data = @as([]u8, @ptrCast(@constCast(wgpu.wgpuBufferGetConstMappedRange(
+            pixel_buffer,
+            0,
+            @sizeOf(u8) * width * height * 4,
+        ))));
+        const img = zstbi.Image{
+            .width = @intCast(width),
+            .height = @intCast(height),
+            .num_components = 4,
+            .data = data[0..],
+            .bytes_per_row = @intCast(width),
+            .bytes_per_component = 1,
+            .is_hdr = false,
+        };
+
+        var temp_buffer: [256]u8 = undefined;
+        const filename = std.fmt.bufPrintZ(
+            &temp_buffer,
+            "frame_{d:0>4}.png",
+            .{frame_number},
+        ) catch @panic("Failed to std.fmt.bufPrintZ\n");
+        zstbi.Image.writeToFile(img, filename, .png) catch |err| {
+            std.log.err("{any}", .{err});
+        };
+
+        user_data.?.done = true;
+        wgpu.wgpuBufferUnmap(pixel_buffer);
+        return;
+    }
+    log("[ERROR/Map Pixel Buffer Async] Status: {any}\n", .{status});
+}
+
 fn setup() !void {
     // const instance_descriptor = wgpu.WGPUInstanceDescriptor{
     //     .requiredFeatureCount = 1,
@@ -442,7 +533,10 @@ fn setup() !void {
                 .hwnd = glfw.getWin32Window(window),
             };
             surface = wgpu.wgpuInstanceCreateSurface(instance, &wgpu.WGPUSurfaceDescriptor{
-                .label = wgpu.WGPUStringView{.data= "Surface/Windows", .length = wgpu.WGPU_STRLEN, },
+                .label = wgpu.WGPUStringView{
+                    .data = "Surface/Windows",
+                    .length = wgpu.WGPU_STRLEN,
+                },
                 .nextInChain = @ptrCast(&wgpu_surface_source_windows_hwnd),
             });
             log("\nSurface: {any}", .{surface});
@@ -565,6 +659,14 @@ fn renderPipeline() void {
     // SHADER
     const shader_module = createShaderModule(@embedFile("@render.basic"));
 
+    // Pixel buffer
+    pixel_buffer = createBuffer(
+        u32,
+        "Pixel Buffer",
+        width * height,
+        wgpu.WGPUBufferUsage_MapRead | wgpu.WGPUBufferUsage_CopyDst,
+    );
+
     // Uniform buffer
     uniform_buffer = createBuffer(
         Uniforms,
@@ -663,8 +765,12 @@ fn renderPipeline() void {
                     .data = "fs_main",
                     .length = wgpu.WGPU_STRLEN,
                 },
-                .targetCount = 1,
+                .targetCount = 2,
                 .targets = &[_]wgpu.WGPUColorTargetState{
+                    wgpu.WGPUColorTargetState{
+                        .format = wgpu.WGPUTextureFormat_RGBA8Unorm,
+                        .writeMask = wgpu.WGPUColorWriteMask_All,
+                    },
                     wgpu.WGPUColorTargetState{
                         .format = texture_format,
                         .writeMask = wgpu.WGPUColorWriteMask_All,
@@ -942,6 +1048,14 @@ fn deinit() void {
 }
 
 pub fn main() !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    zstbi.init(allocator);
+    zstbi.setFlipVerticallyOnWrite(true);
+    defer zstbi.deinit();
+
     try glfw.init();
     defer glfw.terminate();
 
@@ -957,7 +1071,7 @@ pub fn main() !void {
     std.debug.print("Texture View: {any}\n", .{target_texture_view});
     std.debug.assert(target_texture_view != null);
 
-    computePipeline();
+    // computePipeline();
 
     renderPipeline();
 
@@ -969,6 +1083,9 @@ pub fn main() !void {
             glfw.pollEvents();
 
             draw();
+
+            if (frame_number > record_frame_count) break;
+            frame_number += 1;
         }
 
         // headless: {
@@ -981,6 +1098,18 @@ pub fn main() !void {
         //     break :headless;
         // }
     }
+
+    // const w: usize = 128;
+    // const h: usize = 128;
+    // const channels: usize = 4;
+    // var pixels = [_]u8{0} ** (w * h * channels);
+    // var i: usize = 0;
+    // while (i < pixels.len) : (i += channels) {
+    //     pixels[i + 0] = 255;
+    //     pixels[i + 1] = 0;
+    //     pixels[i + 2] = 0;
+    //     pixels[i + 3] = 255;
+    // }
 
     deinit();
 }

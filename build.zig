@@ -69,6 +69,9 @@ pub fn build(b: *std.Build) !void {
         exe.addLibraryPath(glfw_dep.path("libs"));
         exe.root_module.addImport("glfw", glfw_dep.module("glfw"));
 
+        const zstbi = b.dependency("zstbi", .{});
+        exe.root_module.addImport("zstbi", zstbi.module("root"));
+
         // webgpu-headers
         // :warning: This is using an older version of the headers
         // commit bac520839ff5ed2e2b648ed540bd9ec45edbccbc
@@ -78,36 +81,36 @@ pub fn build(b: *std.Build) !void {
         module.addIncludePath(wgpu_headers_dep.path("./"));
 
         if (target.result.os.tag == .macos) {
-          std.debug.print("\n⚠ Compiling for macOS\n\n", .{});
-          const wgpu_native_dep = b.lazyDependency("wgpu_macos_aarch64_debug", .{}) orelse @panic("Can't find dependency");
-          const prefix = "lib";
-          const extension = "a";
-          const lib_name = b.fmt("lib/{s}wgpu_native.{s}", .{ prefix, extension });
-          const wgpu_native_lib = wgpu_native_dep.path(lib_name);
-          module.addObjectFile(wgpu_native_lib);
+            std.debug.print("\n⚠ Compiling for macOS\n\n", .{});
+            const wgpu_native_dep = b.lazyDependency("wgpu_macos_aarch64_debug", .{}) orelse @panic("Can't find dependency");
+            const prefix = "lib";
+            const extension = "a";
+            const lib_name = b.fmt("lib/{s}wgpu_native.{s}", .{ prefix, extension });
+            const wgpu_native_lib = wgpu_native_dep.path(lib_name);
+            module.addObjectFile(wgpu_native_lib);
 
-          module.linkFramework("Foundation", .{});
-          module.linkFramework("QuartzCore", .{});
-          module.linkFramework("Metal", .{});
-          module.linkFramework("CoreGraphics", .{});
-          module.linkSystemLibrary("objc", .{});
+            module.linkFramework("Foundation", .{});
+            module.linkFramework("QuartzCore", .{});
+            module.linkFramework("Metal", .{});
+            module.linkFramework("CoreGraphics", .{});
+            module.linkSystemLibrary("objc", .{});
         }
         if (target.result.os.tag == .windows) {
-          std.debug.print("\n⚠ Compiling for Windows\n\n", .{});
-          const wgpu_native_dep = b.lazyDependency("wgpu_windows_x86_64_msvc_debug", .{}) orelse @panic("Can't find dependency");
-          const prefix = "";
-          const extension = "dll";
-          const lib_name = b.fmt("{s}wgpu_native.{s}", .{ prefix, extension });
-          const wgpu_native_lib = wgpu_native_dep.path(b.pathJoin(&.{"lib/", lib_name}) );
-          module.addObjectFile(wgpu_native_lib);
+            std.debug.print("\n⚠ Compiling for Windows\n\n", .{});
+            const wgpu_native_dep = b.lazyDependency("wgpu_windows_x86_64_msvc_debug", .{}) orelse @panic("Can't find dependency");
+            const prefix = "";
+            const extension = "dll";
+            const lib_name = b.fmt("{s}wgpu_native.{s}", .{ prefix, extension });
+            const wgpu_native_lib = wgpu_native_dep.path(b.pathJoin(&.{ "lib/", lib_name }));
+            module.addObjectFile(wgpu_native_lib);
 
-          module.linkSystemLibrary("gdi32", .{});
-          module.linkSystemLibrary("user32", .{});
-          module.linkSystemLibrary("shell32", .{});
+            module.linkSystemLibrary("gdi32", .{});
+            module.linkSystemLibrary("user32", .{});
+            module.linkSystemLibrary("shell32", .{});
 
-          const copy_wgpu_native_lib = b.addInstallFileWithDir(wgpu_native_lib, .bin, lib_name);
-          b.getInstallStep().dependOn(&copy_wgpu_native_lib.step);
-          _ = b.installBinFile("modules/glfw/libs/glfw3.dll", "glfw3.dll");
+            const copy_wgpu_native_lib = b.addInstallFileWithDir(wgpu_native_lib, .bin, lib_name);
+            b.getInstallStep().dependOn(&copy_wgpu_native_lib.step);
+            _ = b.installBinFile("modules/glfw/libs/glfw3.dll", "glfw3.dll");
         }
 
         b.installArtifact(exe);
